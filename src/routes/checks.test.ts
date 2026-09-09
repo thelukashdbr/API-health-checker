@@ -1,9 +1,20 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { buildApp } from '../app.js';
 
+const { lookupMock } = vi.hoisted(() => ({ lookupMock: vi.fn() }));
+
+vi.mock('node:dns', () => ({
+  promises: { lookup: lookupMock },
+}));
+
 describe('POST /checks', () => {
+  beforeEach(() => {
+    lookupMock.mockResolvedValue({ address: '93.184.216.34', family: 4 });
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.clearAllMocks();
   });
 
   it('returns UP for a healthy endpoint', async () => {
@@ -84,5 +95,21 @@ describe('POST /checks', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json().error).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns DOWN with BLOCKED_ADDRESS for a URL pointing at a loopback address', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const app = buildApp();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/checks',
+      payload: { url: 'http://127.0.0.1:9999/admin' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ status: 'DOWN', error: 'BLOCKED_ADDRESS' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

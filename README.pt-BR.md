@@ -12,7 +12,8 @@ Você fornece uma URL, ela faz uma requisição GET para essa URL e retorna:
 - status `UP` / `DOWN`
 - HTTP status code
 - tempo de resposta em milissegundos
-- um motivo de erro específico quando o próprio check falha (`TIMEOUT`, `CONNECTION_ERROR`)
+- um motivo de erro específico quando o próprio check falha (`TIMEOUT`,
+  `CONNECTION_ERROR`, `BLOCKED_ADDRESS`)
 
 Também é possível verificar várias URLs de forma concorrente em uma única requisição.
 
@@ -41,6 +42,13 @@ ambiente `PORT`).
 ```bash
 npm run build   # compila para dist/
 npm start       # executa o build compilado
+```
+
+## Executando com Docker
+
+```bash
+docker build -t api-health-checker .
+docker run -p 3000:3000 api-health-checker
 ```
 
 ## Executando os testes
@@ -139,28 +147,33 @@ outras).
   vez de rejeitar o lote inteiro. O tamanho do batch é limitado (`maxItems: 20`) em vez
   de adicionar um limitador de concorrência — o array já é pequeno e limitado por
   design, então um limitador adicionaria complexidade sem um problema real a resolver.
+- **O bloqueio de SSRF reaproveita a infraestrutura de falha já existente.** Um endereço
+  bloqueado é reportado como `{ "status": "DOWN", "error": "BLOCKED_ADDRESS" }` — um
+  `200`, não um `400` — porque é implementado como mais um modo de falha do `fetchUrl`
+  (junto de `TIMEOUT` e `CONNECTION_ERROR`), então ele flui pelo `checkHealth` e pelo
+  endpoint de batch sem nenhuma mudança nas camadas de rota ou validação.
 
 ## Limitações
 
 - **SSRF é apenas parcialmente mitigado.** A API aceita uma URL arbitrária fornecida
   pelo usuário por design, o que é um vetor clássico de SSRF: um target poderia apontar
   para `http://localhost`, `169.254.169.254` (endpoints de metadata de cloud) ou outro
-  serviço interno. Atualmente só o *protocolo* da URL é restrito a `http`/`https` — não
-  há bloqueio de faixas de IP privadas/loopback, nem proteção contra DNS rebinding
-  (resolver um hostname que parece público para um IP privado depois da validação). Essa
-  é uma lacuna consciente para um projeto de portfólio local, não um descuido, e é o
-  próximo item planejado (veja abaixo).
+  serviço interno. Antes de conectar, o hostname do target é resolvido uma vez e
+  rejeitado se cair em uma faixa privada/loopback/link-local conhecida (veja
+  `assertPublicHost` em [src/clients/httpClient.ts](src/clients/httpClient.ts)) — mas
+  **não há proteção contra DNS rebinding** (o endereço pode resolver de forma diferente
+  entre essa checagem e a chamada real de `fetch` momentos depois). Fechar essa lacuna
+  direito exigiria reutilizar o IP já resolvido na própria conexão, o que o `fetch`
+  nativo não permite sem um `dns.lookup` customizado — fora do escopo aqui.
 - Sem persistência: os resultados dos checks nunca são armazenados, não há histórico.
 - Sem autenticação/rate limiting — qualquer um que alcance a API pode disparar checks.
 - Sem validação do destino de redirects: o `fetch` segue redirects por padrão, então uma
   URL validada ainda poderia redirecionar para um protocolo não permitido ou um endereço
-  interno.
+  interno depois que a checagem inicial de SSRF passa.
 
 ## Possíveis melhorias futuras
 
-- Bloquear requisições para faixas de IP privadas/loopback/link-local e re-checar o IP
-  *resolvido* (não só o hostname) para fechar a lacuna de SSRF acima.
-- Dockerfile para execução em container.
+- Fechar a lacuna de DNS rebinding acima (fixar a conexão no IP já resolvido).
 - Persistir resultados dos checks (seria a primeira justificativa real para adicionar um
   banco de dados).
 - Rate limiting por cliente.

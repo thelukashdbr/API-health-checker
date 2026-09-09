@@ -12,7 +12,8 @@ You give it a URL, it makes a GET request to that URL and reports back:
 - `UP` / `DOWN` status
 - HTTP status code
 - response time in milliseconds
-- a distinguished error reason when the check itself fails (`TIMEOUT`, `CONNECTION_ERROR`)
+- a distinguished error reason when the check itself fails (`TIMEOUT`, `CONNECTION_ERROR`,
+  `BLOCKED_ADDRESS`)
 
 It also supports checking a batch of URLs concurrently in a single request.
 
@@ -40,6 +41,13 @@ The server listens on `http://localhost:3000` (override with the `PORT` env var)
 ```bash
 npm run build   # compiles to dist/
 npm start       # runs the compiled build
+```
+
+## Running with Docker
+
+```bash
+docker build -t api-health-checker .
+docker run -p 3000:3000 api-health-checker
 ```
 
 ## Running tests
@@ -137,25 +145,32 @@ Checks up to 20 URLs concurrently (`Promise.all`, one failing URL never blocks t
   whole batch. The batch size is capped (`maxItems: 20`) instead of adding a concurrency
   limiter — the array is small and bounded by design, so a limiter would add complexity
   without a real problem to solve.
+- **SSRF blocking reuses the existing failure plumbing.** A blocked address is reported
+  as `{ "status": "DOWN", "error": "BLOCKED_ADDRESS" }` — a `200`, not a `400` — because
+  it's implemented as one more failure mode of `fetchUrl` (alongside `TIMEOUT` and
+  `CONNECTION_ERROR`), so it flows through `checkHealth` and the batch endpoint without
+  any changes to the route or validation layers.
 
 ## Limitations
 
 - **SSRF is only partially mitigated.** The API accepts an arbitrary user-supplied URL by
   design, which is a classic SSRF vector: a target could point at `http://localhost`,
-  `169.254.169.254` (cloud metadata endpoints), or another internal service. Currently
-  only the URL's *protocol* is restricted to `http`/`https` — there is no blocking of
-  private/loopback IP ranges, and no protection against DNS rebinding (resolving a
-  public-looking hostname to a private IP after validation). This is a conscious gap for
-  a local portfolio project, not an oversight, and is the next thing planned (see below).
+  `169.254.169.254` (cloud metadata endpoints), or another internal service. Before
+  connecting, the target hostname is resolved once and rejected if it lands in a
+  well-known private/loopback/link-local range (see `assertPublicHost` in
+  [src/clients/httpClient.ts](src/clients/httpClient.ts)) — but there is **no protection
+  against DNS rebinding** (the address could resolve differently between this check and
+  the actual `fetch` call moments later). Closing that gap properly needs to reuse the
+  resolved IP for the connection itself, which native `fetch` doesn't let you do without
+  a custom `dns.lookup` override — out of scope here.
 - No persistence: results are never stored, there's no history of past checks.
 - No authentication/rate limiting — anyone who can reach the API can trigger checks.
 - No redirect-target validation: `fetch` follows redirects by default, so a validated
-  URL could still redirect to a disallowed protocol or an internal address.
+  URL could still redirect to a disallowed protocol or an internal address after the
+  initial SSRF check passes.
 
 ## Possible future improvements
 
-- Block requests to private/loopback/link-local IP ranges and re-check the *resolved* IP
-  (not just the hostname) to close the SSRF gap above.
-- Dockerfile for containerized runs.
+- Close the DNS-rebinding gap above (pin the connection to the already-resolved IP).
 - Persist check results (would be the first justification for adding a database).
 - Rate limiting per client.
