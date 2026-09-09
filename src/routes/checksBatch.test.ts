@@ -1,9 +1,20 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { buildApp } from '../app.js';
 
+const { lookupMock } = vi.hoisted(() => ({ lookupMock: vi.fn() }));
+
+vi.mock('node:dns', () => ({
+  promises: { lookup: lookupMock },
+}));
+
 describe('POST /checks/batch', () => {
+  beforeEach(() => {
+    lookupMock.mockResolvedValue({ address: '93.184.216.34', family: 4 });
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.clearAllMocks();
   });
 
   it('checks multiple urls concurrently and reports each result independently', async () => {
@@ -51,6 +62,29 @@ describe('POST /checks/batch', () => {
 
     expect(results[0]).toMatchObject({ url: 'not-a-url', status: 'DOWN', error: 'INVALID_URL' });
     expect(results[1]).toMatchObject({ status: 'UP' });
+  });
+
+  it('marks a private-address url in the batch as BLOCKED_ADDRESS without calling fetch for it', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const app = buildApp();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/checks/batch',
+      payload: { urls: ['http://169.254.169.254/latest/meta-data', 'https://example.com'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const { results } = response.json();
+
+    expect(results[0]).toMatchObject({
+      url: 'http://169.254.169.254/latest/meta-data',
+      status: 'DOWN',
+      error: 'BLOCKED_ADDRESS',
+    });
+    expect(results[1]).toMatchObject({ status: 'UP' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('rejects an empty urls array with 400', async () => {
