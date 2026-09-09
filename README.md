@@ -1,3 +1,5 @@
+🇧🇷 [Ler em Português](README.pt-BR.md)
+
 # API Health Checker
 
 A small API that checks whether HTTP(S) endpoints are up, built as a focused backend
